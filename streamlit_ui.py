@@ -1,10 +1,113 @@
+import json
+import os
+from datetime import datetime
+from typing import Dict, List, Optional
 
 import streamlit as st
 from AdaphotoRet_run import search_photos
 
+# 反馈日志存储 
+FEEDBACK_LOG_FILE = "feedback_log.json"
+
+def load_feedback_log() -> List[Dict]:
+    if os.path.exists(FEEDBACK_LOG_FILE):
+        with open(FEEDBACK_LOG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_feedback_entry(entry: Dict):
+    log = load_feedback_log()
+    log.append(entry)
+    with open(FEEDBACK_LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(log, f, ensure_ascii=False, indent=2)
+
+def render_feedback_section(
+    top_results: List[Dict],
+    user_query: str,
+    system_best_index: int = 0
+) -> Optional[Dict]:
+    """
+    在检索结果下方渲染反馈收集区域。
+    每个 top_results 元素需包含: 'img_path', 'score', 'trace'
+    """
+    st.markdown("---")
+    st.subheader("📝 您的反馈帮助我们更懂你")
+
+    st.markdown("**① 请点击选择你心中最匹配的照片：**")
+    cols = st.columns(len(top_results))
+    if "feedback_choice" not in st.session_state:
+        st.session_state.feedback_choice = system_best_index
+    choice_index = st.session_state.feedback_choice
+
+    for i, res in enumerate(top_results):
+        with cols[i]:
+            st.image(res["img_path"], use_container_width=True)
+            if st.button(f"🥇 选这张", key=f"sel_{i}"):
+                st.session_state.feedback_choice = i
+                st.rerun()
+
+    mismatch_reasons = []
+    better_reason = ""
+    if choice_index != system_best_index:
+        st.warning("您选择的最佳照片与系统判定不同，请指出问题以便我们优化。")
+        st.markdown("**② 系统最佳图片的哪些评估不准确？**（可多选）")
+        system_best_trace = top_results[system_best_index].get("trace", [])
+        rule_options = []
+        for name, delta, evidence in system_best_trace:
+            sign = "+" if delta > 0 else ("-" if delta < 0 else "0")
+            label = f"[{sign}] {name}: {evidence}"
+            rule_options.append((label, name))
+        if rule_options:
+            selected_labels = st.multiselect(
+                "勾选您认为评估有误的规则：",
+                options=[opt[0] for opt in rule_options],
+                default=[],
+            )
+            mismatch_reasons = []
+            for sel in selected_labels:
+                for opt_label, opt_name in rule_options:
+                    if sel == opt_label:
+                        mismatch_reasons.append(opt_name)
+                        break
+        else:
+            st.info("系统最佳图片没有明显的评估规则，您可以直接描述问题。")
+        better_reason = st.text_input(
+            "③ 您选的这张照片，好在哪里？",
+            placeholder="例如：它的场景更符合“草地”，动物颜色更白"
+        )
+    else:
+        st.success("✅ 系统最佳与您的选择一致，感谢肯定！")
+        if st.button("确认提交正向反馈"):
+            entry = {
+                "query": user_query,
+                "system_best": top_results[system_best_index]["img_path"],
+                "user_best": top_results[system_best_index]["img_path"],
+                "mismatch_reasons": [],
+                "better_reason": "",
+                "comment": "用户认为系统最佳正确",
+                "timestamp": datetime.now().isoformat()
+            }
+            save_feedback_entry(entry)
+            st.toast("正向反馈已记录，谢谢！")
+            return None
+
+    if st.button("📬 提交反馈"):
+        entry = {
+            "query": user_query,
+            "system_best": top_results[system_best_index]["img_path"],
+            "user_best": top_results[choice_index]["img_path"],
+            "mismatch_reasons": mismatch_reasons,
+            "better_reason": better_reason,
+            "timestamp": datetime.now().isoformat()
+        }
+        save_feedback_entry(entry)
+        st.toast("反馈已记录，感谢您的帮助！")
+        return entry
+    return None
+
 st.set_page_config(page_title="AdaphotoRet · 记忆相册", page_icon="🖼️", layout="wide")
 
-# ---------- 自定义 CSS (完整天蓝泡泡风格) ----------
+# 自定义 CSS 
 CUSTOM_CSS = """
 <style>
     .stApp {
@@ -138,7 +241,6 @@ CUSTOM_CSS = """
         box-shadow: 0 12px 28px rgba(0,0,0,0.12);
     }
     
-    /* 输入框样式 */
     div[data-testid="stTextInput"] input {
         background: rgba(255, 255, 255, 0.35) !important;
         border: 1px solid rgba(255, 255, 255, 0.6) !important;
@@ -161,14 +263,6 @@ CUSTOM_CSS = """
         box-shadow: 0 8px 20px rgba(0,0,0,0.05);
     }
 
-    .art-quote {
-        background: linear-gradient(135deg, #6C5CE7, #00CEC9, #FDCB6E);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        font-weight: 700;
-    }
-    
     .tips-card {
         background: rgba(255, 255, 255, 0.25);
         backdrop-filter: blur(15px);
@@ -218,15 +312,17 @@ CUSTOM_CSS = """
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# ---------- 会话状态 ----------
+# 会话状态 
 if "page" not in st.session_state:
     st.session_state.page = "welcome"
 if "last_results" not in st.session_state:
     st.session_state.last_results = None
 if "last_query" not in st.session_state:
     st.session_state.last_query = ""
+if "feedback_choice" not in st.session_state:
+    st.session_state.feedback_choice = 0
 
-# ---------- 首页 ----------
+# 首页 
 if st.session_state.page == "welcome":
     st.markdown("""
     <div class="welcome-box">
@@ -250,7 +346,7 @@ if st.session_state.page == "welcome":
             st.session_state.page = "search"
             st.rerun()
 
-# ---------- 检索页 ----------
+# 检索页 
 else:
     col_back, col_title = st.columns([0.8, 8])
     with col_back:
@@ -273,7 +369,6 @@ else:
     with left_col:
         with st.container():
             st.markdown('<div class="search-card">', unsafe_allow_html=True)
-            # === 新增引导语（放在输入框上方）===
             st.markdown("""
             <div style="text-align: center; margin-bottom: 0.8rem; color: #2C3E50; font-size: 1rem;">
                 <span style="font-size: 1.2rem;">✨</span> 
@@ -310,7 +405,7 @@ else:
             """, unsafe_allow_html=True)
 
         if st.session_state.last_results is not None:
-            top1, top2, top3, _, _ = st.session_state.last_results
+            top1, top2, top3, report_md, table_data, top_results = st.session_state.last_results
             if top1 is None:
                 st.warning("未找到匹配的照片，试试更具体的描述？")
             else:
@@ -356,13 +451,14 @@ else:
 
     if search_clicked and query:
         with st.spinner("🧠 正在解析语义，筛选最匹配的瞬间..."):
-            top1, top2, top3, report_md, table_data = search_photos(query)
-            st.session_state.last_results = (top1, top2, top3, report_md, table_data)
+            top1, top2, top3, report_md, table_data, top_results = search_photos(query)
+            st.session_state.last_results = (top1, top2, top3, report_md, table_data, top_results)
             st.session_state.last_query = query
+            st.session_state.feedback_choice = 0
             st.rerun()
 
     if st.session_state.last_results is not None:
-        _, _, _, report_md, table_data = st.session_state.last_results
+        top1, top2, top3, report_md, table_data, top_results = st.session_state.last_results
         if report_md:
             st.markdown("---")
             st.markdown("### 📋 可解释推理报告")
@@ -377,4 +473,12 @@ else:
                     "1": st.column_config.NumberColumn("匹配度", format="%d"),
                     "2": "规则贡献分解"
                 }
+            )
+
+        # 反馈区域
+        if top_results:
+            render_feedback_section(
+                top_results,
+                st.session_state.last_query,
+                system_best_index=0
             )
