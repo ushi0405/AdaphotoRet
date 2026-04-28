@@ -1,4 +1,4 @@
-﻿
+
 import json
 import math
 import os
@@ -24,7 +24,7 @@ print("正在加载语义模型...")
 model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 print("语义模型加载完成。")
 
-# --- 基础地标知识 ---
+# 基础地标知识 
 LANDMARK_TO_CITY_BASE = {
     "成温立交": "成都", "chengwen flyover": "成都",
     "雍和宫": "北京", "yonghegong": "北京", "yonghegong lama temple": "北京",
@@ -155,7 +155,6 @@ def extract_entities_by_pos(text: str) -> List[str]:
     return unique
 
 def parse_query(user_query: str, l2c, c2l) -> Dict:
-    # 品种短语归一化
     processed = user_query
     for key, normalized in BREED_NORMALIZATION.items():
         processed = processed.replace(key, normalized)
@@ -192,7 +191,6 @@ def parse_query(user_query: str, l2c, c2l) -> Dict:
         "person_gender": person_attr["gender"],
         "person_ethnicity": person_attr["ethnicity"],
         "extracted_entities": entities,
-        # ---------- 关键修复 ----------
         # 原来仅依赖 PET_ANIMAL_TYPES，现在如果提取到了品种或动物类型，也当作宠物查询
         "needs_pet": any(t in user_query for t in PET_ANIMAL_TYPES) or len(pet_attr["animal_type"]) > 0 or len(pet_attr["breed"]) > 0,
         "pet_animal_type": pet_attr["animal_type"],
@@ -247,7 +245,7 @@ def parse_query(user_query: str, l2c, c2l) -> Dict:
     return {"expanded_query": expanded_query, "terms": terms, "decomposition": decomposition}
 
 
-# ---------- 加载元数据 ----------
+# 加载元数据 
 with open("metadata_cache.json", "r", encoding="utf-8") as f:
     metadata_raw = json.load(f)
 
@@ -273,7 +271,7 @@ image_paths, vector_index = build_vector_index(metadata)
 
 
 def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
-    score = base_sim * 0.65      # 语义权重降为 0.65
+    score = base_sim * 0.65      
     trace = [("base_semantic_similarity", round(base_sim, 4), "向量语义相似")]
 
     doc_text = normalize_text(img_info.get("_search_text", ""))
@@ -330,7 +328,7 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
     if query_terms.get("needs_structure") and match_terms(doc_text, STRUCTURE_TERMS):
         score += 0.08; trace.append(("intent_structure_match", 0.08, "命中结构讲解意图"))
 
-    # ---------- 人物属性 (仅当不是宠物查询时) ----------
+    # 人物属性 
     if not query_terms.get("needs_pet"):
         people = img_info.get("main_subjects", {})
         if people:
@@ -371,7 +369,7 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 if not matched:
                     score -= 0.06; trace.append(("person_ethnicity_mismatch", -0.06, "人种不符"))
 
-    # ---------- 宠物匹配 ----------
+    # 宠物匹配 
     if query_terms.get("needs_pet") and "pet_details" in img_info:
         pet = img_info["pet_details"]
 
@@ -447,7 +445,7 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 score -= 0.12
                 trace.append(("pet_life_stage_mismatch", -0.12, f"年龄不符(查询:{','.join(q_life)})"))
 
-    # ---------- 实体关键词匹配 ----------
+    # 实体关键词匹配 
     query_entities = query_terms.get("extracted_entities", [])
     if query_entities:
         img_keywords = [normalize_text(k) for k in img_info.get("keywords", [])]
@@ -525,35 +523,48 @@ def build_reasoning_markdown(user_query, decomposition, top_results):
 
 def search_photos(user_query: str):
     if not user_query or not user_query.strip():
-        return [None, None, None, "请输入检索描述。", []]
+        return [None, None, None, "请输入检索描述。", [], []]
+
     parsed = parse_query(user_query, L2C_ALL, C2L_ALL)
     qv = model.encode([parsed["expanded_query"]], normalize_embeddings=True).astype("float32")
     k = min(20, len(image_paths))
     sims, indices = vector_index.search(qv, k)
+
     results = []
     for i in range(k):
         idx = int(indices[0][i])
-        if idx < 0: continue
+        if idx < 0:
+            continue
         p = image_paths[idx]
         info = metadata[p]
         base_sim = float(sims[0][i])
         sc, trace = rerank_score(parsed["terms"], info, base_sim)
-        results.append({"img_path": p, "score": sc, "raw_score": sc, "trace": trace})
-    results.sort(key=lambda x: x["raw_score"], reverse=True)
+        results.append({
+            "img_path": p,
+            "score": sc,
+            "trace": trace
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+
     if not results:
-        return [None, None, None, "未找到匹配照片。", []]
+        return [None, None, None, "未找到匹配照片。", [], []]
+
     top3 = results[:3]
     paths = [r["img_path"] for r in top3]
-    while len(paths) < 3: paths.append(None)
+    while len(paths) < 3:
+        paths.append(None)
+
     report = build_reasoning_markdown(user_query, parsed["decomposition"], top3)
+
     rows = []
     for r in top3:
         contrib = " | ".join([f"{name}:{delta:+.2f}" for name, delta, _ in r["trace"]])
         rows.append([r["img_path"], r["score"], contrib])
-    return paths[0], paths[1], paths[2], report, rows
 
+    return paths[0], paths[1], paths[2], report, rows, results[:3]
 
-# ==================== 界面 (Gradio) ====================
+# 界面 
 CUSTOM_CSS = """
 body, .gradio-container {
     background: linear-gradient(135deg, #D4E8FC 0%, #B2D4F5 100%);
