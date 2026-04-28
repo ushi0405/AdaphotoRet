@@ -4,9 +4,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import streamlit as st
-from AdaphotoRet_run import search_photos
+from AdaphotoRet_run import search_photos, image_paths, metadata
 
-#  反馈日志存储 
+# ---------- 反馈日志 ----------
 FEEDBACK_LOG_FILE = "feedback_log.json"
 
 def load_feedback_log() -> List[Dict]:
@@ -26,10 +26,6 @@ def render_feedback_section(
     user_query: str,
     system_best_index: int = 0
 ) -> Optional[Dict]:
-    """
-    在检索结果下方渲染反馈收集区域。
-    每个 top_results 元素需包含: 'img_path', 'score', 'trace'
-    """
     st.markdown("---")
     st.subheader("📝 您的反馈帮助我们更懂你")
 
@@ -108,9 +104,10 @@ def render_feedback_section(
     return None
 
 
+#  Streamlit 页面配置 
 st.set_page_config(page_title="AdaphotoRet · 记忆相册", page_icon="🖼️", layout="wide")
 
-# 自定义 CSS 
+#  自定义 CSS 
 CUSTOM_CSS = """
 <style>
     .stApp {
@@ -310,9 +307,25 @@ CUSTOM_CSS = """
         border-style: solid;
         border-color: rgba(255, 255, 255, 0.7) transparent transparent transparent;
     }
+    
+    /* 照片墙网格 */
+    .gallery-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 1rem;
+        padding: 1rem 0;
+    }
+    .gallery-item {
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        transition: transform 0.2s;
+    }
+    .gallery-item:hover {
+        transform: scale(1.03);
+    }
 </style>
 """
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 #  会话状态 
@@ -325,7 +338,7 @@ if "last_query" not in st.session_state:
 if "feedback_choice" not in st.session_state:
     st.session_state.feedback_choice = 0
 
-# 首页 
+#  欢迎页 
 if st.session_state.page == "welcome":
     st.markdown("""
     <div class="welcome-box">
@@ -343,17 +356,48 @@ if st.session_state.page == "welcome":
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1.5, 2, 1.5])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("✨ 开启记忆之旅 ✨", use_container_width=True, key="start_btn"):
+        if st.button("🖼️ 查看照片墙", use_container_width=True):
+            st.session_state.page = "gallery"
+            st.rerun()
+        if st.button("✨ 开启记忆之旅 ✨", use_container_width=True):
             st.session_state.page = "search"
             st.rerun()
 
-# 检索页 
+#  照片墙页 
+elif st.session_state.page == "gallery":
+    # 导航栏
+    col_back, col_title = st.columns([0.8, 8])
+    with col_back:
+        if st.button("🏠", key="gallery_back", help="返回首页"):
+            st.session_state.page = "welcome"
+            st.rerun()
+    st.markdown("## 🖼️ 所有照片")
+    st.caption("点击下方按钮可直接进入检索体验")
+
+    imgs_per_row = 4
+    for i in range(0, len(image_paths), imgs_per_row):
+        row_imgs = image_paths[i : i + imgs_per_row]
+        cols = st.columns(imgs_per_row)
+        for col, img_path in zip(cols, row_imgs):
+            with col:
+                st.image(img_path, use_container_width=True)
+        # 填充剩余列（如果最后一行不满）
+        for j in range(len(row_imgs), imgs_per_row):
+            pass  
+
+    # 底部“开始检索”按钮
+    st.markdown("---")
+    if st.button("🔍 开始检索", use_container_width=True):
+        st.session_state.page = "search"
+        st.rerun()
+
+#  检索页 
 else:
     col_back, col_title = st.columns([0.8, 8])
     with col_back:
-        if st.button("🏠", key="back_home", help="返回首页"):
+        if st.button("🏠", key="search_back", help="返回首页"):
             st.session_state.page = "welcome"
             st.session_state.last_results = None
             st.rerun()
@@ -478,7 +522,6 @@ else:
                 }
             )
 
-        # 反馈区域
         if top_results:
             render_feedback_section(
                 top_results,
