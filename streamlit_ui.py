@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import streamlit as st
 from AdaphotoRet_run import search_photos
 
-# 反馈日志存储 
+#  反馈日志存储 
 FEEDBACK_LOG_FILE = "feedback_log.json"
 
 def load_feedback_log() -> List[Dict]:
@@ -33,6 +33,7 @@ def render_feedback_section(
     st.markdown("---")
     st.subheader("📝 您的反馈帮助我们更懂你")
 
+    # ① 选择你心目中的最佳照片
     st.markdown("**① 请点击选择你心中最匹配的照片：**")
     cols = st.columns(len(top_results))
     if "feedback_choice" not in st.session_state:
@@ -91,6 +92,7 @@ def render_feedback_section(
             st.toast("正向反馈已记录，谢谢！")
             return None
 
+    # ④ 提交按钮
     if st.button("📬 提交反馈"):
         entry = {
             "query": user_query,
@@ -104,6 +106,7 @@ def render_feedback_section(
         st.toast("反馈已记录，感谢您的帮助！")
         return entry
     return None
+
 
 st.set_page_config(page_title="AdaphotoRet · 记忆相册", page_icon="🖼️", layout="wide")
 
@@ -312,7 +315,7 @@ CUSTOM_CSS = """
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# 会话状态 
+#  会话状态 
 if "page" not in st.session_state:
     st.session_state.page = "welcome"
 if "last_results" not in st.session_state:
