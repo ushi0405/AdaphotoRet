@@ -4,3 +4,4 @@ faiss-cpu
 jieba
 openai
 dashscope
+gradio
