@@ -21,15 +21,13 @@ def save_all_conversations(convs):
 # ---------- 页面配置 ----------
 st.set_page_config(page_title="AdaphotoRet", page_icon="🐱", layout="wide")
 
-# ---------- 自定义 CSS：强制展开器内容可滚动 ----------
+# ---------- 自定义 CSS：强制内容可滚动 ----------
 st.markdown("""
 <style>
-/* 让展开器内部的内容区域可以正常滚动，不受高度限制 */
 div[data-testid="stExpanderContent"] {
     overflow-y: auto !important;
-    max-height: 70vh !important;   /* 最大高度为视口高度70%，可根据需要调整 */
+    max-height: 70vh !important;
 }
-/* 如果有需要，优化滚动条样式 */
 div[data-testid="stExpanderContent"]::-webkit-scrollbar {
     width: 6px;
 }
@@ -114,7 +112,7 @@ def run_assistant(user_message):
 2.在进行一次查询追问时，在未输出照片前每次追问最多涉及两个问题，最大连续追问次数为4次，四次后不管是否确定都要输出一次照片展示给用户。
 3.当连续追问两次用户的回答都是“记不清楚”，“不知道”且得不到任何有用信息时必须根据已有线索输出一次图片给用户做判断。
 4.根据现有信息，当你认为有70%以上信心能找到用户想要的照片时就必须停止追问，进行照片输出。
-5. **重要：当你要执行检索时，必须把对话历史中用户提供的所有关键描述整合成一个完整的查询词，放在【行动】的“检索：”后面。只能使用用户明确说出的词语，不得添加任何用户未提及的场景、对象或形容词（例如用户没说“海滩”就不能加“海滩”）。历史：“一群打沙滩排球的人”+用户补充“比赛”，查询词应为“一群打沙滩排球的人 比赛”。另外，必须只从用户描述提取整合词，不要整合你自己的提问对话中的词**
+5. **重要：当你要执行检索时，必须把对话历史中用户提供的所有关键描述整合成一个完整的查询词，放在【行动】的“检索：”后面。只能使用用户明确说出的词语，不得添加任何用户未提及的场景、对象或形容词（例如用户没说“海滩”就不能加“海滩”）。历史：“一群打沙滩排球的人”+用户补充“比赛”，查询词应为“一群打沙滩排球的人 比赛”，仅能整合用户的有效实体词，不能整合混入你自己的话。**
 6. 当你执行检索并展示照片后，必须在【回答】的末尾追问“这里有您想要的照片吗？如果不够准确，请告诉我哪里需要调整。”
 7. 你的回复格式必须严格为：
    【思考】你的内部推理过程
@@ -204,8 +202,8 @@ if page == "📷 照片墙":
         with cols[i - start_idx]:
             st.image(image_paths[i], use_container_width=True)
 
-elif page == "💬 智能照片检索助手":
-    st.title("💬 你的智能照片检索助手")
+elif page == "💬 对话助手":
+    st.title("💬 对话助手")
     ensure_greeting()
 
     with st.sidebar.expander("📝 对话管理", expanded=True):
@@ -270,7 +268,6 @@ elif page == "💬 智能照片检索助手":
                             st.image(img_path, use_container_width=True)
                 if msg.get("report"):
                     with st.expander("📋 推理报告"):
-                        # 内容直接放入，依靠全局CSS保证滚动，不再额外包裹div（避免嵌套冲突）
                         st.markdown(msg["report"])
 
     user_input = st.chat_input("描述你想找的照片...")
