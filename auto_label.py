@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import json
 import os
 import re
@@ -358,14 +358,28 @@ def normalize_metadata_schema(metadata: Dict) -> Dict:
     else:
         metadata["background_people"] = str(metadata["background_people"]).strip()
 
-    category = metadata.get("category", "其他")
+    # ---------- 确保 category 字段存在且统一 ----------
+    category = metadata.get("category", "")
+    # 标准化可能的输出
+    if not category or category.lower() in ["", "其他", "未知"]:
+        # 根据已有信息推断
+        if "pet_details" in metadata and metadata["pet_details"].get("animal_type", "未知") != "未知":
+            category = "宠物"
+        else:
+            main = metadata.get("main_subjects", {})
+            if main.get("count", 0) > 0 and main.get("count_category") not in ["无", "单个物体", "单个对象", "单个动物"]:
+                category = "人物"
+            else:
+                category = "风景"   # 默认归为风景（也可保持“其他”，但风景更符合多数照片）
     metadata["category"] = category
+
+    # 如果存在 slots，继续处理宠物硬槽位
     slots = metadata.get("slots", {})
     if category == "宠物":
         validated_slots = validate_pet_slots(slots)
         metadata["pet_details"] = validated_slots
 
-        # 安全提取属性
+        # 提取宠物属性（安全）
         animal_type = validated_slots.get("animal_type", "")
         breed = validated_slots.get("breed", "")
         action = validated_slots.get("action", "")
@@ -374,7 +388,6 @@ def normalize_metadata_schema(metadata: Dict) -> Dict:
         life_stage = validated_slots.get("life_stage", "未知")
         coat_color_list = validated_slots.get("coat_color", [])
 
-        # 构建额外关键词
         extra_kw = []
         for attr_str in [animal_type, breed, action, environment, pose, life_stage]:
             if isinstance(attr_str, str) and attr_str and attr_str != "未知":
@@ -383,7 +396,6 @@ def normalize_metadata_schema(metadata: Dict) -> Dict:
             if isinstance(color, str) and color and color != "未知":
                 extra_kw.append(color)
 
-        # 安全合并关键词
         combined = metadata["keywords"] + extra_kw
         seen = set()
         new_keywords = []
@@ -393,14 +405,12 @@ def normalize_metadata_schema(metadata: Dict) -> Dict:
                 new_keywords.append(k)
         metadata["keywords"] = new_keywords
 
-        # 补充描述
         coat_str = ", ".join(coat_color_list) if coat_color_list else ""
         pet_desc = f"【宠物】品种：{breed}，毛色：{coat_str}，姿态：{pose}，动作：{action}，年龄：{life_stage}"
         metadata["description"] = metadata["description"] + " " + pet_desc
 
     metadata["location"] = metadata.get("location", {"city": "", "landmarks": []})
     return metadata
-
 
 def analyze_image(image_path: str) -> Optional[Dict]:
     parsed = call_bailian_vl(image_path)
