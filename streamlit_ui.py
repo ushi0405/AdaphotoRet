@@ -1,530 +1,281 @@
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
-
+from typing import Dict, List
 import streamlit as st
 from AdaphotoRet_run import search_photos, image_paths, metadata
+from llm_explainer import get_deepseek_client
 
-# ---------- 反馈日志 ----------
-FEEDBACK_LOG_FILE = "feedback_log.json"
+CHAT_HISTORY_FILE = "chat_history.json"
 
-def load_feedback_log() -> List[Dict]:
-    if os.path.exists(FEEDBACK_LOG_FILE):
-        with open(FEEDBACK_LOG_FILE, "r", encoding="utf-8") as f:
+def load_all_conversations():
+    if os.path.exists(CHAT_HISTORY_FILE):
+        with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return []
+    return {}
 
-def save_feedback_entry(entry: Dict):
-    log = load_feedback_log()
-    log.append(entry)
-    with open(FEEDBACK_LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+def save_all_conversations(convs):
+    with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(convs, f, ensure_ascii=False, indent=2)
 
-def render_feedback_section(
-    top_results: List[Dict],
-    user_query: str,
-    system_best_index: int = 0
-) -> Optional[Dict]:
-    st.markdown("---")
-    st.subheader("📝 您的反馈帮助我们更懂你")
+# ---------- 页面配置 ----------
+st.set_page_config(page_title="AdaphotoRet", page_icon="🐱", layout="wide")
 
-    # ① 选择你心目中的最佳照片
-    st.markdown("**① 请点击选择你心中最匹配的照片：**")
-    cols = st.columns(len(top_results))
-    if "feedback_choice" not in st.session_state:
-        st.session_state.feedback_choice = system_best_index
-    choice_index = st.session_state.feedback_choice
-
-    for i, res in enumerate(top_results):
-        with cols[i]:
-            st.image(res["img_path"], use_container_width=True)
-            if st.button(f"🥇 选这张", key=f"sel_{i}"):
-                st.session_state.feedback_choice = i
-                st.rerun()
-
-    mismatch_reasons = []
-    better_reason = ""
-    if choice_index != system_best_index:
-        st.warning("您选择的最佳照片与系统判定不同，请指出问题以便我们优化。")
-        st.markdown("**② 系统最佳图片的哪些评估不准确？**（可多选）")
-        system_best_trace = top_results[system_best_index].get("trace", [])
-        rule_options = []
-        for name, delta, evidence in system_best_trace:
-            sign = "+" if delta > 0 else ("-" if delta < 0 else "0")
-            label = f"[{sign}] {name}: {evidence}"
-            rule_options.append((label, name))
-        if rule_options:
-            selected_labels = st.multiselect(
-                "勾选您认为评估有误的规则：",
-                options=[opt[0] for opt in rule_options],
-                default=[],
-            )
-            mismatch_reasons = []
-            for sel in selected_labels:
-                for opt_label, opt_name in rule_options:
-                    if sel == opt_label:
-                        mismatch_reasons.append(opt_name)
-                        break
-        else:
-            st.info("系统最佳图片没有明显的评估规则，您可以直接描述问题。")
-        better_reason = st.text_input(
-            "③ 您选的这张照片，好在哪里？",
-            placeholder="例如：它的场景更符合“草地”，动物颜色更白"
-        )
-    else:
-        st.success("✅ 系统最佳与您的选择一致，感谢肯定！")
-        if st.button("确认提交正向反馈"):
-            entry = {
-                "query": user_query,
-                "system_best": top_results[system_best_index]["img_path"],
-                "user_best": top_results[system_best_index]["img_path"],
-                "mismatch_reasons": [],
-                "better_reason": "",
-                "comment": "用户认为系统最佳正确",
-                "timestamp": datetime.now().isoformat()
-            }
-            save_feedback_entry(entry)
-            st.toast("正向反馈已记录，谢谢！")
-            return None
-
-    # ④ 提交按钮
-    if st.button("📬 提交反馈"):
-        entry = {
-            "query": user_query,
-            "system_best": top_results[system_best_index]["img_path"],
-            "user_best": top_results[choice_index]["img_path"],
-            "mismatch_reasons": mismatch_reasons,
-            "better_reason": better_reason,
-            "timestamp": datetime.now().isoformat()
-        }
-        save_feedback_entry(entry)
-        st.toast("反馈已记录，感谢您的帮助！")
-        return entry
-    return None
-
-
-#  Streamlit 页面配置 
-st.set_page_config(page_title="AdaphotoRet · 记忆相册", page_icon="🖼️", layout="wide")
-
-#  自定义 CSS 
-CUSTOM_CSS = """
+# ---------- 自定义 CSS：强制展开器内容可滚动 ----------
+st.markdown("""
 <style>
-    .stApp {
-        background: linear-gradient(135deg, #D4E8FC 0%, #B2D4F5 100%);
-    }
-    
-    .welcome-box {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 85vh;
-        text-align: center;
-        padding: 2rem 1rem;
-        background: rgba(255, 255, 255, 0.2);
-        backdrop-filter: blur(25px);
-        border-radius: 48px;
-        margin: 1.5rem;
-        box-shadow: 0 25px 50px -8px rgba(30, 80, 130, 0.15);
-        border: 1px solid rgba(255, 255, 255, 0.5);
-    }
-    
-    .book {
-        width: 240px;
-        height: 320px;
-        position: relative;
-        perspective: 1500px;
-        margin: 0 auto;
-    }
-    .book .page {
-        display: block;
-        width: 120px;
-        height: 320px;
-        background-color: rgba(255, 255, 255, 0.7);
-        position: absolute;
-        top: 0;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.05);
-        background-image: linear-gradient(to right, rgba(160, 190, 220, 0.1) 0%, transparent 10%);
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        transform-origin: left center;
-        animation: flipPage 3s ease-in-out forwards;
-    }
-    .book .page:first-child { left: 0; border-radius: 4px 0 0 4px; border-right: none; }
-    .book .page:last-child { left: 120px; border-radius: 0 4px 4px 0; border-left: none; transform-origin: right center; animation: flipPageRight 3s ease-in-out forwards; }
-    .book::after {
-        content: '';
-        position: absolute;
-        top: 2%; left: 50%;
-        width: 4px; height: 96%;
-        background: linear-gradient(to right, rgba(0,0,0,0.1), transparent);
-        transform: translateX(-50%);
-        z-index: 2;
-    }
-    @keyframes flipPage {
-        0% { transform: rotateY(0deg); }
-        30% { transform: rotateY(-25deg); box-shadow: -5px 10px 15px rgba(0,0,0,0.1); }
-        70% { transform: rotateY(-5deg); }
-        100% { transform: rotateY(0deg); }
-    }
-    @keyframes flipPageRight {
-        0% { transform: rotateY(0deg); }
-        30% { transform: rotateY(25deg); box-shadow: 5px 10px 15px rgba(0,0,0,0.1); }
-        70% { transform: rotateY(5deg); }
-        100% { transform: rotateY(0deg); }
-    }
-    
-    .main-title {
-        font-family: 'Georgia', 'Times New Roman', serif;
-        font-size: 5.5rem;
-        font-weight: 800;
-        background: linear-gradient(135deg, #FF7675, #FDCB6E, #00CEC9, #A29BFE, #6C5CE7);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        letter-spacing: 4px;
-        margin-bottom: 0.8rem;
-        animation: fadeInUp 1.5s;
-    }
-    .sub-title {
-        font-family: 'Georgia', serif;
-        font-style: italic;
-        font-size: 1.5rem;
-        color: #2C3E50;
-        margin-top: -10px;
-        animation: fadeInUp 1.8s;
-    }
-    @keyframes fadeInUp {
-        from { opacity: 0; transform: translateY(30px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
-    .search-card {
-        background: rgba(255, 255, 255, 0.35);
-        backdrop-filter: blur(20px);
-        border-radius: 32px;
-        padding: 1.5rem 1.5rem;
-        box-shadow: 0 20px 40px -10px rgba(30, 80, 130, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.6);
-    }
-    
-    .polaroid {
-        background: transparent !important;
-        padding: 0 !important;
-        border-radius: 20px;
-        box-shadow: none !important;
-        border: none !important;
-        transition: transform 0.2s ease;
-        margin-bottom: 10px;
-    }
-    .polaroid:hover {
-        transform: scale(1.02);
-    }
-    
-    .stButton > button {
-        background: transparent;
-        border: 2px solid rgba(255,255,255,0.6);
-        color: #2C3E50 !important;
-        font-weight: bold;
-        border-radius: 60px;
-        padding: 0.7rem 3rem;
-        font-size: 1.2rem;
-        backdrop-filter: blur(10px);
-        background: rgba(255, 255, 255, 0.25);
-        box-shadow: 0 8px 20px rgba(0,0,0,0.08);
-        transition: 0.3s;
-    }
-    .stButton > button:hover {
-        background: rgba(255, 255, 255, 0.4);
-        border-color: rgba(255,255,255,0.9);
-        transform: translateY(-3px);
-        box-shadow: 0 12px 28px rgba(0,0,0,0.12);
-    }
-    
-    div[data-testid="stTextInput"] input {
-        background: rgba(255, 255, 255, 0.35) !important;
-        border: 1px solid rgba(255, 255, 255, 0.6) !important;
-        border-radius: 40px !important;
-        padding: 14px 24px !important;
-        font-size: 1.05rem !important;
-        backdrop-filter: blur(15px);
-        color: #1e293b !important;
-    }
-    div[data-testid="stTextInput"] input:focus {
-        border-color: #74B9FF !important;
-        box-shadow: 0 0 0 3px rgba(116, 185, 255, 0.3) !important;
-    }
-
-    .stImage {
-        background: transparent !important;
-    }
-    .stImage > img {
-        border-radius: 16px !important;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.05);
-    }
-
-    .tips-card {
-        background: rgba(255, 255, 255, 0.25);
-        backdrop-filter: blur(15px);
-        border-radius: 24px;
-        padding: 1.2rem;
-        border: 1px solid rgba(255, 255, 255, 0.5);
-        color: #1e293b;
-        font-size: 0.92rem;
-        line-height: 1.7;
-    }
-
-    .little-guy {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: flex-start;
-        margin-top: 1.5rem;
-        position: relative;
-    }
-    .speech-bubble {
-        background: rgba(255, 255, 255, 0.7);
-        backdrop-filter: blur(12px);
-        border-radius: 16px;
-        padding: 6px 10px;
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-        font-size: 0.75rem;
-        color: #1e293b;
-        text-align: center;
-        word-break: break-word;
-        max-width: 90px;
-        line-height: 1.3;
-        margin-bottom: 4px;
-    }
-    .speech-bubble::after {
-        content: '';
-        position: absolute;
-        bottom: -6px;
-        left: 50%;
-        margin-left: -6px;
-        border-width: 6px;
-        border-style: solid;
-        border-color: rgba(255, 255, 255, 0.7) transparent transparent transparent;
-    }
-    
-    /* 照片墙网格 */
-    .gallery-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 1rem;
-        padding: 1rem 0;
-    }
-    .gallery-item {
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        transition: transform 0.2s;
-    }
-    .gallery-item:hover {
-        transform: scale(1.03);
-    }
+/* 让展开器内部的内容区域可以正常滚动，不受高度限制 */
+div[data-testid="stExpanderContent"] {
+    overflow-y: auto !important;
+    max-height: 70vh !important;   /* 最大高度为视口高度70%，可根据需要调整 */
+}
+/* 如果有需要，优化滚动条样式 */
+div[data-testid="stExpanderContent"]::-webkit-scrollbar {
+    width: 6px;
+}
+div[data-testid="stExpanderContent"]::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.2);
+    border-radius: 3px;
+}
 </style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-#  会话状态 
-if "page" not in st.session_state:
-    st.session_state.page = "welcome"
-if "last_results" not in st.session_state:
-    st.session_state.last_results = None
-if "last_query" not in st.session_state:
-    st.session_state.last_query = ""
-if "feedback_choice" not in st.session_state:
-    st.session_state.feedback_choice = 0
+# ---------- 初始化会话状态 ----------
+if "conversations" not in st.session_state:
+    st.session_state.conversations = load_all_conversations()
+if "current_conv_id" not in st.session_state:
+    convs = st.session_state.conversations
+    if convs:
+        latest_id = max(convs.keys(), key=lambda x: convs[x]["created"])
+        st.session_state.current_conv_id = latest_id
+    else:
+        now = datetime.now().isoformat()
+        new_id = now
+        st.session_state.conversations[new_id] = {
+            "name": "新对话",
+            "created": now,
+            "messages": []
+        }
+        st.session_state.current_conv_id = new_id
 
-#  欢迎页 
-if st.session_state.page == "welcome":
-    st.markdown("""
-    <div class="welcome-box">
-        <div class="book">
-            <span class="page"></span>
-            <span class="page"></span>
-        </div>
-        <h1 class="main-title">AdaphotoRet</h1>
-        <p class="sub-title">Finding the moments you remember,<br>with a heart that truly understands</p>
-        <div style="margin: 2rem 0; font-size: 1.1rem; color: #2d3748; line-height: 2; max-width: 700px;">
-            <p style="font-size: 1.2rem; font-weight: 600;">“能拍就拍，能照就照，想炫的一定要去炫，十年后，再好的相机和技术，也拍不出如此般模样。”</p>
-            <p style="font-style: italic; opacity: 0.8;">“We photographers deal in things which are continually vanishing, and when they have vanished there is no contrivance on earth can make them come back again.” — Henri Cartier-Bresson</p>
-            <p style="font-size: 2rem; margin: 0.5rem 0;">📷 ✨ 🌊</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+# 如果当前对话的消息为空，自动添加一条问候语
+def ensure_greeting():
+    conv = get_current_conversation()
+    if conv and not conv["messages"]:
+        greeting = {
+            "role": "assistant",
+            "content": "你好～我是AdaphotoRet，你的私人记忆相册。想找哪张照片呢？可以直接告诉我哦！",
+            "thinking": "",
+            "images": [],
+            "report": ""
+        }
+        conv["messages"].append(greeting)
+        save_all_conversations(st.session_state.conversations)
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        if st.button("🖼️ 查看照片墙", use_container_width=True):
-            st.session_state.page = "gallery"
+def get_current_conversation():
+    return st.session_state.conversations.get(st.session_state.current_conv_id)
+
+def get_current_messages():
+    conv = get_current_conversation()
+    return conv["messages"] if conv else []
+
+def add_message(role, content, thinking="", images=None, report=""):
+    conv = get_current_conversation()
+    if conv:
+        conv["messages"].append({
+            "role": role,
+            "content": content,
+            "thinking": thinking,
+            "images": images or [],
+            "report": report
+        })
+        save_all_conversations(st.session_state.conversations)
+
+def search_photos_tool(query):
+    result = search_photos(query)
+    top1, top2, top3, report, table_data, top_results = result
+    return {
+        "top1": top1,
+        "top2": top2,
+        "top3": top3,
+        "report": report,
+        "table": table_data,
+        "top_results": top_results
+    }
+
+def run_assistant(user_message):
+    messages = get_current_messages()
+    add_message("user", user_message)
+
+    client = get_deepseek_client()
+    context = [{"role": m["role"], "content": m["content"]} for m in messages[-5:]]
+    system_prompt = """你是一个照片检索助手，名叫“AdaphotoRet”。你必须遵循以下原则：
+1. 即使能够输出前TOP3的照片，但是你的默认任务永远是使得最佳匹配照片符合用户输入。所以当用户的查询不够具体时（例如“一群打沙滩排球的人”，但你能看到照片库中有多张不同场景、不同人种的人），你应主动在【提问】中列出关键差异（例如“是比赛还是娱乐活动？是亚洲人还是西方人？”），并给出选项让用户选择。
+2.在进行一次查询追问时，在未输出照片前每次追问最多涉及两个问题，最大连续追问次数为4次，四次后不管是否确定都要输出一次照片展示给用户。
+3.当连续追问两次用户的回答都是“记不清楚”，“不知道”且得不到任何有用信息时必须根据已有线索输出一次图片给用户做判断。
+4.根据现有信息，当你认为有70%以上信心能找到用户想要的照片时就必须停止追问，进行照片输出。
+5. **重要：当你要执行检索时，必须把对话历史中用户提供的所有关键描述整合成一个完整的查询词，放在【行动】的“检索：”后面。只能使用用户明确说出的词语，不得添加任何用户未提及的场景、对象或形容词（例如用户没说“海滩”就不能加“海滩”）。历史：“一群打沙滩排球的人”+用户补充“比赛”，查询词应为“一群打沙滩排球的人 比赛”。另外，必须只从用户描述提取整合词，不要整合你自己的提问对话中的词**
+6. 当你执行检索并展示照片后，必须在【回答】的末尾追问“这里有您想要的照片吗？如果不够准确，请告诉我哪里需要调整。”
+7. 你的回复格式必须严格为：
+   【思考】你的内部推理过程
+   【行动】“提问：你的问题内容” 或 “检索：优化后的查询词” 或 “回答：你的最终答复（包含追问）”
+不要输出其他内容。"""
+    context.insert(0, {"role": "system", "content": system_prompt})
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=context,
+            temperature=0.3,
+            max_tokens=400,
+        )
+        reply = response.choices[0].message.content.strip()
+    except Exception as e:
+        reply = f"【思考】调用失败：{e}\n【行动】回答：抱歉，请稍后再试。"
+
+    thinking_part = ""
+    action_part = ""
+    if "【行动】" in reply:
+        parts = reply.split("【行动】")
+        thinking_part = parts[0].replace("【思考】", "").strip()
+        action_part = parts[1].strip()
+    elif "【思考】" in reply:
+        thinking_part = reply.replace("【思考】", "").strip()
+        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**严格只能使用用户说过的词语，不得添加任何用户未提及的场景、地点或形容词（例如用户没说“海滩”就不能加“海滩”）**。只输出中文查询词，不要任何解释。
+对话历史：
+{chr(10).join([f"用户：{m['content']}" for m in messages[-5:] if m['role'] == 'user'])}"""
+        try:
+            summary_response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.2,
+                max_tokens=100,
+            )
+            optimized_query = summary_response.choices[0].message.content.strip()
+        except Exception:
+            optimized_query = user_message
+        action_part = "检索：" + optimized_query
+    else:
+        thinking_part = "尝试理解中..."
+        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**严格只能使用用户说过的词语，不得添加任何用户未提及的场景、地点或形容词（例如用户没说“海滩”就不能加“海滩”）**。只输出中文查询词，不要任何解释。
+对话历史：
+{chr(10).join([f"用户：{m['content']}" for m in messages[-5:] if m['role'] == 'user'])}"""
+        try:
+            summary_response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": summary_prompt}],
+                temperature=0.2,
+                max_tokens=100,
+            )
+            optimized_query = summary_response.choices[0].message.content.strip()
+        except Exception:
+            optimized_query = user_message
+        action_part = "检索：" + optimized_query
+
+    if action_part.startswith("提问："):
+        question = action_part.replace("提问：", "").strip()
+        add_message("assistant", question, thinking=thinking_part)
+    elif action_part.startswith("检索："):
+        query = action_part.replace("检索：", "").strip()
+        results = search_photos_tool(query)
+        imgs = [results["top1"], results["top2"], results["top3"]]
+        content = "我找到了以下照片。这里有您想要的照片吗？如果没有，请告诉我需要调整的地方。"
+        add_message("assistant", content, thinking=thinking_part, images=[img for img in imgs if img], report=results.get("report", ""))
+    elif action_part.startswith("回答："):
+        answer = action_part.replace("回答：", "").strip()
+        add_message("assistant", answer, thinking=thinking_part)
+    else:
+        add_message("assistant", "抱歉，请再描述一下。", thinking=thinking_part)
+
+# ---------- 侧边栏导航 ----------
+st.sidebar.title("🐱 AdaphotoRet")
+page = st.sidebar.radio("导航", ["📷 照片墙", "💬 对话助手"])
+
+if page == "📷 照片墙":
+    st.title("📷 照片墙")
+    total = len(image_paths)
+    per_page = 4
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_num = st.slider("翻页", 1, total_pages, 1)
+    start_idx = (page_num - 1) * per_page
+    end_idx = min(start_idx + per_page, total)
+    cols = st.columns(per_page)
+    for i in range(start_idx, end_idx):
+        with cols[i - start_idx]:
+            st.image(image_paths[i], use_container_width=True)
+
+elif page == "💬 智能照片检索助手":
+    st.title("💬 你的智能照片检索助手")
+    ensure_greeting()
+
+    with st.sidebar.expander("📝 对话管理", expanded=True):
+        if st.button("➕ 新建对话"):
+            now = datetime.now().isoformat()
+            new_id = now
+            st.session_state.conversations[new_id] = {
+                "name": "新对话",
+                "created": now,
+                "messages": []
+            }
+            st.session_state.current_conv_id = new_id
+            save_all_conversations(st.session_state.conversations)
             st.rerun()
-        if st.button("✨ 开启记忆之旅 ✨", use_container_width=True):
-            st.session_state.page = "search"
-            st.rerun()
 
-#  照片墙页 
-elif st.session_state.page == "gallery":
-    # 导航栏
-    col_back, col_title = st.columns([0.8, 8])
-    with col_back:
-        if st.button("🏠", key="gallery_back", help="返回首页"):
-            st.session_state.page = "welcome"
-            st.rerun()
-    st.markdown("## 🖼️ 所有照片")
-    st.caption("点击下方按钮可直接进入检索体验")
+        convs = st.session_state.conversations
+        if convs:
+            conv_ids = list(convs.keys())
+            conv_ids.sort(key=lambda x: convs[x]["created"], reverse=True)
+            for cid in conv_ids:
+                cname = convs[cid].get("name", "未命名")
+                col1, col2 = st.columns([8, 1])
+                with col1:
+                    if cid == st.session_state.current_conv_id:
+                        st.markdown(f"**🔹 {cname}**")
+                    else:
+                        if st.button(f"📄 {cname}", key=f"load_{cid}"):
+                            st.session_state.current_conv_id = cid
+                            st.rerun()
+                with col2:
+                    # 删除对话按钮（不删除当前对话）
+                    if cid != st.session_state.current_conv_id:
+                        if st.button("🗑️", key=f"del_{cid}", help="删除该对话"):
+                            del st.session_state.conversations[cid]
+                            save_all_conversations(st.session_state.conversations)
+                            st.rerun()
+        else:
+            st.caption("暂无对话")
 
-    imgs_per_row = 4
-    for i in range(0, len(image_paths), imgs_per_row):
-        row_imgs = image_paths[i : i + imgs_per_row]
-        cols = st.columns(imgs_per_row)
-        for col, img_path in zip(cols, row_imgs):
-            with col:
-                st.image(img_path, use_container_width=True)
-        # 填充剩余列（如果最后一行不满）
-        for j in range(len(row_imgs), imgs_per_row):
-            pass  
+    current_conv = get_current_conversation()
+    if current_conv:
+        conv_name = st.text_input("对话标题", value=current_conv.get("name", "新对话"), key="conv_name_input")
+        if st.button("更新标题"):
+            current_conv["name"] = conv_name
+            save_all_conversations(st.session_state.conversations)
 
-    # 底部“开始检索”按钮
-    st.markdown("---")
-    if st.button("🔍 开始检索", use_container_width=True):
-        st.session_state.page = "search"
+    # 显示聊天记录
+    for msg in get_current_messages():
+        if msg["role"] == "user":
+            with st.chat_message("user"):
+                st.write(msg["content"])
+        else:
+            with st.chat_message("assistant"):
+                if msg.get("thinking"):
+                    st.caption(f"🧠 {msg['thinking']}")
+                if msg.get("content"):
+                    st.write(msg["content"])
+                if msg.get("images"):
+                    cols = st.columns(len(msg["images"]))
+                    for i, img_path in enumerate(msg["images"]):
+                        with cols[i]:
+                            st.image(img_path, use_container_width=True)
+                if msg.get("report"):
+                    with st.expander("📋 推理报告"):
+                        # 内容直接放入，依靠全局CSS保证滚动，不再额外包裹div（避免嵌套冲突）
+                        st.markdown(msg["report"])
+
+    user_input = st.chat_input("描述你想找的照片...")
+    if user_input:
+        with st.chat_message("user"):
+            st.write(user_input)
+        run_assistant(user_input)
         st.rerun()
-
-#  检索页 
-else:
-    col_back, col_title = st.columns([0.8, 8])
-    with col_back:
-        if st.button("🏠", key="search_back", help="返回首页"):
-            st.session_state.page = "welcome"
-            st.session_state.last_results = None
-            st.rerun()
-
-    st.markdown("""
-    <div style="text-align: center; margin-bottom: 1.5rem;">
-        <h2 style="margin-bottom: 0.3rem;">🖼️ 用描述唤醒记忆</h2>
-        <p style="font-style: italic; font-size: 1rem; color: #2C3E50; margin-top: 0.2rem;">
-            “照片能捕捉住转瞬即逝的美丽，将永恒定格。” —— 马克·吐温
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    left_col, right_col = st.columns([1.2, 2], gap="large")
-
-    with left_col:
-        with st.container():
-            st.markdown('<div class="search-card">', unsafe_allow_html=True)
-            st.markdown("""
-            <div style="text-align: center; margin-bottom: 0.8rem; color: #2C3E50; font-size: 1rem;">
-                <span style="font-size: 1.2rem;">✨</span> 
-                <b>请在下方描述你心中的画面</b> 
-                <span style="font-size: 1.2rem;">✨</span><br>
-                <span style="font-size: 0.85rem; opacity: 0.8;">
-                    📝 说出场景、人物、宠物、地点……越具体，记忆越清晰
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            query = st.text_input(
-                "输入描述",
-                placeholder="例如：菜花田里的小狗；下雨天的老街道；一群在海滩打排球的西方人",
-                label_visibility="collapsed"
-            )
-            search_clicked = st.button("🔍 开始寻找", use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with right_col:
-        if st.session_state.last_results is None:
-            st.markdown("""
-            <div class="tips-card">
-                <p style="font-weight: 700; margin-top: 0; font-size: 1.05rem;">💡 如何获得最准确的结果？</p>
-                <ul style="padding-left: 1.2rem; margin-bottom: 0;">
-                    <li>🖊️ 描述尽量具体：场景、人物数量、天气、动作、颜色</li>
-                    <li>🐾 如果是宠物，可以说出品种、毛色、姿态（如“蓝白猫”、“橘猫在晒太阳”）</li>
-                    <li>🌍 提到城市或地标（如“成都九眼桥的夜景”）</li>
-                    <li>🎭 加入情感或氛围（如“开心的生日派对”、“忧伤的雨天”）</li>
-                    <li>📸 不要怕口语化，系统能理解“小狗”、“花花”等昵称</li>
-                </ul>
-                <p style="margin-bottom: 0; margin-top: 0.5rem;">✨ 试试看，让记忆瞬间重现！</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        if st.session_state.last_results is not None:
-            top1, top2, top3, report_md, table_data, top_results = st.session_state.last_results
-            if top1 is None:
-                st.warning("未找到匹配的照片，试试更具体的描述？")
-            else:
-                guy_col, img1, img2, img3 = st.columns([0.6, 0.8, 0.8, 0.8])
-                with guy_col:
-                    st.markdown("""
-                    <div class="little-guy">
-                        <div class="speech-bubble">看看是你心目中的那张照片吗</div>
-                        <svg width="70" height="120" viewBox="0 0 70 120" style="display:block; margin: 0 auto;">
-                            <circle cx="35" cy="18" r="11" stroke="#2C3E50" stroke-width="2" fill="none"/>
-                            <circle cx="31" cy="16" r="1.5" fill="#2C3E50"/>
-                            <circle cx="39" cy="16" r="1.5" fill="#2C3E50"/>
-                            <path d="M30 21 Q35 25 40 21" stroke="#2C3E50" stroke-width="1.5" fill="none"/>
-                            <line x1="35" y1="29" x2="35" y2="65" stroke="#2C3E50" stroke-width="2.5"/>
-                            <line x1="35" y1="42" x2="20" y2="55" stroke="#2C3E50" stroke-width="2.5"/>
-                            <line x1="35" y1="42" x2="58" y2="37" stroke="#2C3E50" stroke-width="2.5"/>
-                            <line x1="58" y1="37" x2="65" y2="34" stroke="#2C3E50" stroke-width="2"/>
-                            <line x1="58" y1="37" x2="65" y2="40" stroke="#2C3E50" stroke-width="2"/>
-                            <line x1="35" y1="65" x2="25" y2="90" stroke="#2C3E50" stroke-width="2.5"/>
-                            <line x1="35" y1="65" x2="45" y2="90" stroke="#2C3E50" stroke-width="2.5"/>
-                        </svg>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                with img1:
-                    if top1:
-                        st.markdown('<div class="polaroid">', unsafe_allow_html=True)
-                        st.image(top1, use_container_width=True)
-                        st.caption("🥇 最佳匹配")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                with img2:
-                    if top2:
-                        st.markdown('<div class="polaroid">', unsafe_allow_html=True)
-                        st.image(top2, use_container_width=True)
-                        st.caption("🥈 第二候选")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                with img3:
-                    if top3:
-                        st.markdown('<div class="polaroid">', unsafe_allow_html=True)
-                        st.image(top3, use_container_width=True)
-                        st.caption("🥉 第三候选")
-                        st.markdown('</div>', unsafe_allow_html=True)
-
-    if search_clicked and query:
-        with st.spinner("🧠 正在解析语义，筛选最匹配的瞬间..."):
-            top1, top2, top3, report_md, table_data, top_results = search_photos(query)
-            st.session_state.last_results = (top1, top2, top3, report_md, table_data, top_results)
-            st.session_state.last_query = query
-            st.session_state.feedback_choice = 0
-            st.rerun()
-
-    if st.session_state.last_results is not None:
-        top1, top2, top3, report_md, table_data, top_results = st.session_state.last_results
-        if report_md:
-            st.markdown("---")
-            st.markdown("### 📋 可解释推理报告")
-            st.markdown(report_md)
-        if table_data:
-            st.dataframe(
-                table_data,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "0": "图片路径",
-                    "1": st.column_config.NumberColumn("匹配度", format="%d"),
-                    "2": "规则贡献分解"
-                }
-            )
-
-        if top_results:
-            render_feedback_section(
-                top_results,
-                st.session_state.last_query,
-                system_best_index=0
-            )
