@@ -23,7 +23,7 @@ print("正在加载语义模型...")
 model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
 print("语义模型加载完成。")
 
-# 基础地标知识 
+# --- 基础地标知识 ---
 LANDMARK_TO_CITY_BASE = {
     "成温立交": "成都", "chengwen flyover": "成都",
     "雍和宫": "北京", "yonghegong": "北京", "yonghegong lama temple": "北京",
@@ -242,7 +242,8 @@ def parse_query(user_query: str, l2c, c2l) -> Dict:
     }
     return {"expanded_query": expanded_query, "terms": terms, "decomposition": decomposition}
 
-# 加载元数据 
+
+# ---------- 加载元数据 ----------
 with open("metadata_cache.json", "r", encoding="utf-8") as f:
     metadata_raw = json.load(f)
 
@@ -268,10 +269,10 @@ image_paths, vector_index = build_vector_index(metadata)
 
 
 def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
-    score = base_sim * 0.65      
+    score = base_sim * 0.50      
     trace = [("base_semantic_similarity", round(base_sim, 4), "向量语义相似")]
 
-    # 一级硬槽位
+    # ---------- 一级硬槽位 ----------
     q_needs_pet = query_terms.get("needs_pet", False)
     q_needs_person = (
         bool(query_terms.get("person_count")) or
@@ -279,18 +280,15 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
         bool(query_terms.get("person_gender"))
     )
 
-    # 确定查询意图类别
     if q_needs_pet:
         query_category = "宠物"
     elif q_needs_person:
         query_category = "人物"
     else:
-        query_category = None   
+        query_category = None
 
-    # 获取图片的实际主体类型（优先使用 category 字段）
     img_category = img_info.get("category", "")
     if not img_category:
-        # 旧数据没有 category，根据其他字段推断
         if "pet_details" in img_info:
             img_category = "宠物"
         else:
@@ -300,18 +298,15 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
             else:
                 img_category = "风景或其他"
 
-    # 如果意图明确且类别不匹配，直接给予极高惩罚并返回
     if query_category and query_category != img_category:
         score = -2.0
         trace.append(("hard_category_mismatch", -2.0, f"查询需要{query_category}，但图片是{img_category}"))
-        # 直接计算最终得分，跳过后续评分
         compressed = 1.0 / (1.0 + math.exp(-3.0 * (score - 0.3)))
         final = compressed * 100
         if final > 99.0: final = 99.0
         final = int(round(final))
         final = max(0, min(99, final))
         return final, trace
-
 
     doc_text = normalize_text(img_info.get("_search_text", ""))
     doc_cities = set(img_info.get("_cities", []))
@@ -367,33 +362,38 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
     if query_terms.get("needs_structure") and match_terms(doc_text, STRUCTURE_TERMS):
         score += 0.08; trace.append(("intent_structure_match", 0.08, "命中结构讲解意图"))
 
-    # 人物属性
+    # ---------- 人物属性 (仅当不是宠物查询时) ----------
     if not query_terms.get("needs_pet"):
         people = img_info.get("main_subjects", {})
         if people:
-            cnt_str = people.get("count_category", "")
+            cnt = people.get("count", 0)
             ethnicity = people.get("primary_ethnicity", "")
-            cnt = 0
-            if cnt_str in ["单人", "单个物体"]: cnt = 1
-            elif cnt_str == "两人": cnt = 2
-            elif cnt_str in ["三人", "四人"]: cnt = 3 if cnt_str=="三人" else 4
-            elif cnt_str in ["五人", "五人及以上", "一群人"]: cnt = 10
 
             person_count_q = query_terms.get("person_count", [])
             if person_count_q:
                 qc = person_count_q[0]
                 matched = False
-                if qc == "一个" and cnt == 1: score += 0.12; matched = True
-                elif qc == "两个" and cnt == 2: score += 0.12; matched = True
-                elif qc == "三个" and cnt == 3: score += 0.12; matched = True
-                elif qc == "一群" and cnt >= 5: score += 0.12; matched = True
+                if qc == "一个" and cnt == 1:
+                    score += 0.12; matched = True
+                elif qc == "两个" and cnt == 2:
+                    score += 0.12; matched = True
+                elif qc == "三个" and cnt == 3:
+                    score += 0.12; matched = True
+                elif qc == "一群" and cnt >= 4:
+                    score += 0.12; matched = True
+
                 if not matched:
                     penalty = -0.10
-                    if qc == "一个" and cnt >= 5: penalty = -0.20
-                    elif qc == "两个" and cnt >= 5: penalty = -0.15
-                    elif qc == "一群" and cnt <= 2: penalty = -0.15
-                    score += penalty; trace.append(("person_count_mismatch", penalty, "人物数量不符"))
-                else: trace.append(("person_count_match", 0.12, f"命中{qc}约束"))
+                    if qc == "一个" and cnt >= 5:
+                        penalty = -0.20
+                    elif qc == "两个" and cnt >= 5:
+                        penalty = -0.15
+                    elif qc == "一群" and cnt <= 2:
+                        penalty = -0.15
+                    score += penalty
+                    trace.append(("person_count_mismatch", penalty, f"人物数量不符(查询:{qc}, 实际{cnt}人)"))
+                else:
+                    trace.append(("person_count_match", 0.12, f"命中{qc}约束(实际{cnt}人)"))
 
             ethnicity_q = query_terms.get("person_ethnicity", [])
             if ethnicity_q:
@@ -408,10 +408,9 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 if not matched:
                     score -= 0.06; trace.append(("person_ethnicity_mismatch", -0.06, "人种不符"))
 
-    #  宠物匹配 
+    # ---------- 宠物匹配 ----------
     if query_terms.get("needs_pet") and "pet_details" in img_info:
         pet = img_info["pet_details"]
-
         q_animal = query_terms.get("pet_animal_type", [])
         if q_animal:
             img_animal = pet.get("animal_type", "")
@@ -420,8 +419,7 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 trace.append(("pet_animal_match", 0.16, f"动物类型匹配:{','.join(q_animal)}"))
             else:
                 score -= 0.25
-                trace.append(("pet_animal_mismatch", -0.25, f"动物类型不符(查询:{q_animal[0]}, 图片:{img_animal})"))
-
+                trace.append(("pet_animal_mismatch", -0.25, f"动物类型不符"))
         q_breed = query_terms.get("pet_breed", [])
         if q_breed:
             img_breed = pet.get("breed", "")
@@ -431,12 +429,9 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 if any(alias in img_breed for alias in aliases) or b in img_breed:
                     matched = True; break
             if matched:
-                score += 0.25
-                trace.append(("pet_breed_match", 0.25, f"品种匹配:{','.join(q_breed)}"))
+                score += 0.25; trace.append(("pet_breed_match", 0.25, f"品种匹配:{','.join(q_breed)}"))
             else:
-                score -= 0.20
-                trace.append(("pet_breed_mismatch", -0.20, f"品种不符(查询:{q_breed[0]})"))
-
+                score -= 0.20; trace.append(("pet_breed_mismatch", -0.20, f"品种不符"))
         q_colors = query_terms.get("pet_coat_color", [])
         if q_colors:
             img_colors = pet.get("coat_color", [])
@@ -445,46 +440,28 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 bonus = 0.08 * len(matched_colors); score += bonus
                 trace.append(("pet_color_match", bonus, f"毛色匹配:{','.join(matched_colors)}"))
             else:
-                score -= 0.03
-                trace.append(("pet_color_mismatch", -0.03, "毛色不符"))
-
+                score -= 0.03; trace.append(("pet_color_mismatch", -0.03, "毛色不符"))
         q_act = query_terms.get("pet_action", [])
         if q_act:
             img_act = pet.get("action", "")
             if any(a in img_act for a in q_act):
-                score += 0.14
-                trace.append(("pet_action_match", 0.14, f"动作匹配:{','.join(q_act)}"))
-
+                score += 0.14; trace.append(("pet_action_match", 0.14, f"动作匹配:{','.join(q_act)}"))
         q_env = query_terms.get("pet_environment", [])
         if q_env:
             img_env = pet.get("environment", "")
             if any(e in img_env for e in q_env):
-                score += 0.10
-                trace.append(("pet_env_match", 0.10, f"环境匹配:{','.join(q_env)}"))
-
+                score += 0.10; trace.append(("pet_env_match", 0.10, f"环境匹配:{','.join(q_env)}"))
         q_petc = query_terms.get("pet_count", [])
         if q_petc:
             img_cnt = pet.get("count", 1)
             qc = q_petc[0]
             if (qc == "一个" and img_cnt == 1) or (qc == "两个" and img_cnt == 2) or \
                (qc == "三个" and img_cnt == 3) or (qc == "一群" and img_cnt >= 4):
-                score += 0.10
-                trace.append(("pet_count_match", 0.10, "数量匹配"))
+                score += 0.10; trace.append(("pet_count_match", 0.10, "数量匹配"))
             else:
-                score -= 0.15
-                trace.append(("pet_count_mismatch", -0.15, f"数量不符(查询:{qc})"))
+                score -= 0.15; trace.append(("pet_count_mismatch", -0.15, f"数量不符"))
 
-        q_life = query_terms.get("pet_life_stage", [])
-        if q_life:
-            img_stage = pet.get("life_stage", "")
-            if any(s in img_stage for s in q_life):
-                score += 0.12
-                trace.append(("pet_life_stage_match", 0.12, f"年龄匹配:{','.join(q_life)}"))
-            else:
-                score -= 0.12
-                trace.append(("pet_life_stage_mismatch", -0.12, f"年龄不符(查询:{','.join(q_life)})"))
-
-    #  实体关键词匹配
+    # ---------- 实体关键词匹配 ----------
     query_entities = query_terms.get("extracted_entities", [])
     if query_entities:
         img_keywords = [normalize_text(k) for k in img_info.get("keywords", [])]
@@ -493,7 +470,6 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
             "沙滩排球": ["沙滩排球", "beach volleyball", "排球比赛", "海滩排球"],
         }
         PET_NICKNAMES = {"小狗", "小猫", "小狗狗", "小猫咪", "狗子", "喵星人", "汪星人"}
-
         matched = []
         for e in query_entities:
             if e in PET_NICKNAMES: continue
@@ -505,31 +481,29 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
                 synonyms = SYNONYM_MAP[e]
                 if any(syn in img_desc or any(syn in kw for kw in img_keywords) for syn in synonyms):
                     matched.append(e)
-
         if matched:
-            # 核心活动实体加权
             CORE_ACTIVITY_TERMS = {"沙滩排球", "beach volleyball", "排球比赛"}
             bonus = 0.0
             weak_entities = {"人", "打", "跑", "亚洲人", "西方人", "黑人", "白人"}
             for e in matched:
                 if len(e) > 1 and e not in weak_entities:
                     if e in CORE_ACTIVITY_TERMS:
-                        bonus += 0.25   
+                        bonus += 0.25
                     else:
                         bonus += 0.15
                 else:
                     bonus += 0.05
-            bonus = min(bonus, 0.40)   
+            bonus = min(bonus, 0.50)
             score += bonus
             trace.append(("entity_keyword_match", round(bonus, 3), f"命中实体: {', '.join(matched)}"))
 
-    # 最终得分压缩
     compressed = 1.0 / (1.0 + math.exp(-3.0 * (score - 0.3)))
     final = compressed * 100
     if final > 99.0: final = 99.0
     final = int(round(final))
     final = max(0, min(99, final))
     return final, trace
+
 
 def build_reasoning_markdown(user_query, decomposition, top_results):
     lines = [f"### 查询「{user_query}」的可解释检索结果", ""]
@@ -551,7 +525,6 @@ def build_reasoning_markdown(user_query, decomposition, top_results):
         if pet_attr.get("action"): parts.append(f"动作：{','.join(pet_attr['action'])}")
         if pet_attr.get("life_stage"): parts.append(f"年龄：{','.join(pet_attr['life_stage'])}")
         lines.append(f"**宠物属性**：{'；'.join(parts)}")
-
     lines.append(""); lines.append("#### 推理链（Top 3）")
     for idx, r in enumerate(top_results, start=1):
         lines.append(f"{idx}. `{r['img_path']}` | 最终得分: {r['score']}")
@@ -568,7 +541,6 @@ def build_reasoning_markdown(user_query, decomposition, top_results):
 def search_photos(user_query: str):
     if not user_query or not user_query.strip():
         return [None, None, None, "请输入检索描述。", [], []]
-
     parsed = parse_query(user_query, L2C_ALL, C2L_ALL)
     qv = model.encode([parsed["expanded_query"]], normalize_embeddings=True).astype("float32")
     k = min(20, len(image_paths))
@@ -597,7 +569,7 @@ def search_photos(user_query: str):
     return paths[0], paths[1], paths[2], report, rows, results[:3]
 
 
-#  界面 
+# ==================== 界面 (Gradio) ====================
 CUSTOM_CSS = """
 body, .gradio-container {
     background: linear-gradient(135deg, #D4E8FC 0%, #B2D4F5 100%);
@@ -729,12 +701,6 @@ body, .gradio-container {
 .image-card {
     border-radius: 20px;
     overflow: hidden;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-.gr-text-input > label,
-.gr-text-input > .wrap {
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
