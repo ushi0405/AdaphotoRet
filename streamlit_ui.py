@@ -21,19 +21,12 @@ def save_all_conversations(convs):
 # ---------- 页面配置 ----------
 st.set_page_config(page_title="AdaphotoRet", page_icon="🐱", layout="wide")
 
-# ---------- 自定义 CSS：强制内容可滚动 ----------
+# ---------- 自定义 CSS ----------
 st.markdown("""
 <style>
-div[data-testid="stExpanderContent"] {
-    overflow-y: auto !important;
-    max-height: 70vh !important;
-}
-div[data-testid="stExpanderContent"]::-webkit-scrollbar {
-    width: 6px;
-}
-div[data-testid="stExpanderContent"]::-webkit-scrollbar-thumb {
-    background: rgba(0,0,0,0.2);
-    border-radius: 3px;
+.stChatMessage img {
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -56,7 +49,7 @@ if "current_conv_id" not in st.session_state:
         }
         st.session_state.current_conv_id = new_id
 
-# 如果当前对话的消息为空，自动添加一条问候语
+# 自动问候
 def ensure_greeting():
     conv = get_current_conversation()
     if conv and not conv["messages"]:
@@ -112,7 +105,7 @@ def run_assistant(user_message):
 2.在进行一次查询追问时，在未输出照片前每次追问最多涉及两个问题，最大连续追问次数为4次，四次后不管是否确定都要输出一次照片展示给用户。
 3.当连续追问两次用户的回答都是“记不清楚”，“不知道”且得不到任何有用信息时必须根据已有线索输出一次图片给用户做判断。
 4.根据现有信息，当你认为有70%以上信心能找到用户想要的照片时就必须停止追问，进行照片输出。
-5. **重要：当你要执行检索时，必须把对话历史中用户提供的所有关键描述整合成一个完整的查询词，放在【行动】的“检索：”后面。只能使用用户明确说出的词语，不得添加任何用户未提及的场景、对象或形容词（例如用户没说“海滩”就不能加“海滩”）。历史：“一群打沙滩排球的人”+用户补充“比赛”，查询词应为“一群打沙滩排球的人 比赛”，仅能整合用户的有效实体词，不能整合混入你自己的话。**
+5. **重要：当你要执行检索时，必须把对话历史中用户提供的所有关键描述整合成一个完整的查询词，放在【行动】的“检索：”后面。只能使用用户明确说出的词语，不得添加任何用户未提及的场景、对象或形容词。绝对不能使用“回答”、“提供”、“信息”、“找到”、“想要”、“不够”、“准确”、“请”、“告诉”、“需要”、“调整”等系统引导词。**
 6. 当你执行检索并展示照片后，必须在【回答】的末尾追问“这里有您想要的照片吗？如果不够准确，请告诉我哪里需要调整。”
 7. 你的回复格式必须严格为：
    【思考】你的内部推理过程
@@ -139,7 +132,7 @@ def run_assistant(user_message):
         action_part = parts[1].strip()
     elif "【思考】" in reply:
         thinking_part = reply.replace("【思考】", "").strip()
-        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**严格只能使用用户说过的词语，不得添加任何用户未提及的场景、地点或形容词（例如用户没说“海滩”就不能加“海滩”）**。只输出中文查询词，不要任何解释。
+        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**只能使用用户说过的词语，绝不能出现“回答”、“提供”、“信息”、“找到”、“想要”、“不够”、“准确”、“请”、“告诉”、“需要”、“调整”等系统引导词。**
 对话历史：
 {chr(10).join([f"用户：{m['content']}" for m in messages[-5:] if m['role'] == 'user'])}"""
         try:
@@ -155,7 +148,7 @@ def run_assistant(user_message):
         action_part = "检索：" + optimized_query
     else:
         thinking_part = "尝试理解中..."
-        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**严格只能使用用户说过的词语，不得添加任何用户未提及的场景、地点或形容词（例如用户没说“海滩”就不能加“海滩”）**。只输出中文查询词，不要任何解释。
+        summary_prompt = f"""根据以下对话历史，提炼出一个完整的照片检索查询词，务必包含数量、活动、主要对象等用户明确提到的关键信息。**只能使用用户说过的词语，绝不能出现“回答”、“提供”、“信息”、“找到”、“想要”、“不够”、“准确”、“请”、“告诉”、“需要”、“调整”等系统引导词。**
 对话历史：
 {chr(10).join([f"用户：{m['content']}" for m in messages[-5:] if m['role'] == 'user'])}"""
         try:
@@ -234,7 +227,6 @@ elif page == "💬 对话助手":
                             st.session_state.current_conv_id = cid
                             st.rerun()
                 with col2:
-                    # 删除对话按钮（不删除当前对话）
                     if cid != st.session_state.current_conv_id:
                         if st.button("🗑️", key=f"del_{cid}", help="删除该对话"):
                             del st.session_state.conversations[cid]
@@ -267,8 +259,7 @@ elif page == "💬 对话助手":
                         with cols[i]:
                             st.image(img_path, use_container_width=True)
                 if msg.get("report"):
-                    with st.expander("📋 推理报告"):
-                        st.markdown(msg["report"])
+                    st.markdown(msg["report"])
 
     user_input = st.chat_input("描述你想找的照片...")
     if user_input:
