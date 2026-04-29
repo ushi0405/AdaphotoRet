@@ -17,21 +17,9 @@ def generate_explanation(
     top_results: List[Dict],
     metadata: Dict,
 ) -> str:
-    """
-    使用 DeepSeek 为 Top3 检索结果生成可解释的推理文本。
-
-    Args:
-        user_query: 用户原始查询
-        top_results: 包含图片路径、得分、推理链的列表
-        metadata: 图片元数据字典
-
-    Returns:
-        一段自然语言解释，说明每张图片的匹配/不匹配原因
-    """
     if not top_results:
         return "无结果，无法生成解释。"
 
-    # 构建提示词所需的信息
     info_text = ""
     for idx, r in enumerate(top_results, start=1):
         img_path = r["img_path"]
@@ -40,13 +28,9 @@ def generate_explanation(
         scene = img_info.get("scene", "未知场景")
         keywords = img_info.get("keywords", [])
         people = img_info.get("main_subjects", {})
+        pet = img_info.get("pet_details", {})
         trace = r["trace"]
 
-        # 提取实际人物数量（如果存在）
-        count = people.get("count", 0)
-        count_category = people.get("count_category", "未知")
-
-        # 简要归纳推理链中的关键匹配项
         matched_rules = [f"{rule}: {evidence}" for rule, delta, evidence in trace if delta > 0]
         mismatched_rules = [f"{rule}: {evidence}" for rule, delta, evidence in trace if delta < 0]
 
@@ -55,8 +39,16 @@ def generate_explanation(
 场景：{scene}
 描述：{desc}
 关键词：{', '.join(keywords) if keywords else '无'}
-人物信息：数量={count_category}（实际{count}人），人种={people.get('primary_ethnicity', '未知')}
-匹配的规则：{matched_rules if matched_rules else '无'}
+"""
+        # 仅当有宠物信息时输出宠物信息
+        if pet:
+            info_text += f"""宠物信息：品种={pet.get('breed', '未知')}，毛色={pet.get('coat_color', [])}，年龄={pet.get('life_stage', '未知')}
+"""
+        # 仅当有人物信息且没有宠物信息时，才输出人物数量
+        if people and not pet:
+            info_text += f"""人物信息：数量={people.get('count_category', '未知')}（实际{people.get('count', 0)}人），人种={people.get('primary_ethnicity', '未知')}
+"""
+        info_text += f"""匹配的规则：{matched_rules if matched_rules else '无'}
 不匹配的规则：{mismatched_rules if mismatched_rules else '无'}
 得分：{r['score']}
 """
