@@ -21,28 +21,42 @@ def save_all_conversations(convs):
 # ---------- 页面配置 ----------
 st.set_page_config(page_title="AdaphotoRet", page_icon="🐱", layout="wide")
 
-# ---------- 强制取消所有高度限制 ----------
+# ---------- 强制取消所有高度限制，解决显示不全问题 ----------
 st.markdown("""
 <style>
-/* 让聊天消息内容区域完全自适应高度，不截断 */
-div[data-testid="stChatMessageContent"] {
+/* 强制所有聊天相关容器自动扩展高度，禁止内部滚动条 */
+[data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"],
+[data-testid="stExpanderContent"],
+.stMarkdown,
+.stMarkdown > div,
+div[data-testid="stVerticalBlock"] > div[data-testid="stChatMessageContent"] {
     overflow: visible !important;
     max-height: none !important;
     height: auto !important;
+    min-height: 0 !important;
 }
-/* 展开器内容也去除高度限制 */
-div[data-testid="stExpanderContent"] {
-    max-height: none !important;
-    overflow: visible !important;
+
+/* 禁用内部滚动条，保留页面整体滚动 */
+::-webkit-scrollbar {
+    display: none;
 }
-/* Markdown区域自然显示 */
-.stMarkdown {
-    overflow: visible !important;
+body {
+    overflow-y: auto;
 }
+
+/* 确保报告文本不会缩成小框 */
+.stMarkdown p,
+.stMarkdown div {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+}
+
 /* 图片美化 */
 .stChatMessage img {
     border-radius: 12px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    margin-top: 8px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -65,7 +79,6 @@ if "current_conv_id" not in st.session_state:
         }
         st.session_state.current_conv_id = new_id
 
-# 自动问候
 def ensure_greeting():
     conv = get_current_conversation()
     if conv and not conv["messages"]:
@@ -272,24 +285,29 @@ elif page == "💬 对话助手":
             current_conv["name"] = conv_name
             save_all_conversations(st.session_state.conversations)
 
-    # 显示聊天记录
+    # 显示聊天记录（使用 container 保证内容完整显示）
     for msg in get_current_messages():
         if msg["role"] == "user":
             with st.chat_message("user"):
                 st.write(msg["content"])
         else:
             with st.chat_message("assistant"):
-                if msg.get("thinking"):
-                    st.caption(f"🧠 {msg['thinking']}")
-                if msg.get("content"):
-                    st.write(msg["content"])
-                if msg.get("images"):
-                    cols = st.columns(len(msg["images"]))
-                    for i, img_path in enumerate(msg["images"]):
-                        with cols[i]:
-                            st.image(img_path, use_container_width=True)
-                if msg.get("report"):
-                    st.markdown(msg["report"])
+                # 使用 container 确保内容不被压缩
+                container = st.container()
+                with container:
+                    if msg.get("thinking"):
+                        st.caption(f"🧠 {msg['thinking']}")
+                    if msg.get("content"):
+                        st.write(msg["content"])
+                    if msg.get("images"):
+                        cols = st.columns(len(msg["images"]))
+                        for i, img_path in enumerate(msg["images"]):
+                            with cols[i]:
+                                st.image(img_path, use_container_width=True)
+                    if msg.get("report"):
+                        # 默认展开的报告框，内部无滚动条
+                        with st.expander("📋 详细报告", expanded=True):
+                            st.markdown(msg["report"])
 
     user_input = st.chat_input("描述你想找的照片...")
     if user_input:
