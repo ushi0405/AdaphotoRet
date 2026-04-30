@@ -504,7 +504,6 @@ def rerank_score(query_terms: Dict, img_info: Dict, base_sim: float):
     final = max(0, min(99, final))
     return final, trace
 
-
 def build_reasoning_markdown(user_query, decomposition, top_results):
     lines = [f"### 查询「{user_query}」的可解释检索结果", ""]
     entities = decomposition.get("extracted_entities", [])
@@ -526,18 +525,26 @@ def build_reasoning_markdown(user_query, decomposition, top_results):
         if pet_attr.get("life_stage"): parts.append(f"年龄：{','.join(pet_attr['life_stage'])}")
         lines.append(f"**宠物属性**：{'；'.join(parts)}")
     lines.append(""); lines.append("#### 推理链（Top 3）")
+    
     for idx, r in enumerate(top_results, start=1):
         lines.append(f"{idx}. `{r['img_path']}` | 最终得分: {r['score']}")
+        # 使用纯文本标签，自动换行
+        tags = []
         for rule, delta, evidence in r["trace"]:
             sign = "+" if delta >= 0 else ""
-            lines.append(f"   - {rule}: {sign}{delta:.3f} ({evidence})")
+            tags.append(f"[{rule} {sign}{delta:.3f}]")
+        lines.append(" ".join(tags))
+        # 可选：证据小字，用 | 分隔
+        evi = " | ".join([evidence for _, _, evidence in r["trace"]])
+        lines.append(f"<small>📌 {evi}</small>")
+    
     try:
         explanation = generate_explanation(user_query, top_results, metadata)
         lines.append(""); lines.append("#### 🤖 智能推理说明"); lines.append(explanation)
     except Exception as e:
         print(f"生成解释失败: {e}")
+    
     return "\n".join(lines)
-
 def search_photos(user_query: str):
     if not user_query or not user_query.strip():
         return [None, None, None, "请输入检索描述。", [], []]
