@@ -28,8 +28,8 @@
 ```
 AdaphotoRet_mvp1/
 ├── data/
-│   ├── category1/                 # 人物/生活照片
-│   └── category2/                  # 宠物照片
+│   ├── life/                 # 人物/生活照片
+│   └── pet/                  # 宠物照片
 ├── AdaphotoRet_run.py       # 核心检索逻辑
 ├── streamlit_ui.py          # Streamlit 主界面
 ├── auto_label.py            # 离线标注脚本
